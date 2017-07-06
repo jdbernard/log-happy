@@ -35,6 +35,7 @@ when isMainModule:
   var outFile: File
 
   try:
+    let VERSION = "0.1.0"
     let usage = """
 Usage:
   log_happy [options]
@@ -43,9 +44,10 @@ Usage:
 
 Options:
 
+  -v                        Print version information and exit.
   -e<label>;<pattern>       Add something to expect to see in the log stream.
   -E<label>;<patterh>       Add something to expect not to see in the log stream.
-  -d<def-file>              Specify a JSON definitions blob.
+  -d<def-file>              Read expectations from a JSON definitions file.
   -i<in-file>               Read JSON definitions from <in-file>.
   -o<out-file>              Write the log to <out-file>. Usefull for viewing
                             output later when executing commands.
@@ -133,6 +135,10 @@ Expectations JSON definitions follow this format:
           pattern: re(m[2]),
           expected: m[0] == "e",
           found: false))
+
+      elif arg == "-v":
+        stdout.writeLine "log_happy v" & VERSION
+        quit(QuitSuccess)
 
       elif arg == "-f": follow = true
       elif arg == "--": cmd = ""
