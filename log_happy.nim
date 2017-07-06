@@ -2,7 +2,7 @@
 ## =========
 ##
 ## Little tool to extract expected information from log streams.
-import json, logging, ncurses, os, osproc, streams, strutils, threadpool
+import json, logging, ncurses, os, osproc, sequtils, streams, strutils, threadpool
 import nre except toSeq
 
 import private/ncurses_ext
@@ -31,6 +31,9 @@ proc readStream(stream: Stream): void =
 
 when isMainModule:
   var cmdProc: Process
+  var inStream: Stream
+  var outFile: File
+
   try:
     let usage = """
 Usage:
@@ -44,6 +47,8 @@ Options:
   -E<label>;<patterh>       Add something to expect not to see in the log stream.
   -d<def-file>              Specify a JSON definitions blob.
   -i<in-file>               Read JSON definitions from <in-file>.
+  -o<out-file>              Write the log to <out-file>. Usefull for viewing
+                            output later when executing commands.
   -f                        Similar to tail, do not stop when the end of file
                             is reached but wait for additional modifications
                             to the file. -f is ignored when the input is STDIN.
@@ -68,8 +73,6 @@ Expectations JSON definitions follow this format:
     let args = commandLineParams()
 
     var expectations: seq[Expectation] = @[]
-    var inStream: Stream
-    var haveStream = false
     var follow = false 
     var cmd = "NOCMD"
 
@@ -111,11 +114,18 @@ Expectations JSON definitions follow this format:
             exitErr "no such file (" & filename & ")"
 
           inStream = newFileStream(filename)
-          haveStream = true
         except:
           exitErr "could not open file (" & filename & "):\t\n" &
             getCurrentExceptionMsg()
 
+      elif arg.startsWith("-o"):
+        let filename = arg[2..^1]
+        try:
+          outFile = open(filename, fmWrite)
+        except:
+          exitErr "could not open output file in write mode (" & filename &
+            "):\n\t" & getCurrentExceptionMsg()
+        
       elif arg.match(expPattern).isSome:
         var m = arg.match(expPattern).get().captures()
         expectations.add(Expectation(
@@ -128,10 +138,10 @@ Expectations JSON definitions follow this format:
       elif arg == "--": cmd = ""
       else: exitErr "unrecognized argument: " & arg
         
-    if cmd == "NOCMD" and not haveStream:
+    if cmd == "NOCMD" and inStream.isNil:
       exitErr "no input file or command to execute."
 
-    if not haveStream and cmd != "NOCMD":
+    elif inStream.isNil:
       cmdProc = startProcess(cmd, "", [], nil, {poStdErrToStdOut, poEvalCommand, poUsePath})
       inStream = cmdProc.outputStream
 
@@ -153,7 +163,10 @@ Expectations JSON definitions follow this format:
     init_pair(1, GREEN, BLACK)
     init_pair(2, RED, BLACK)
 
-    let dispHeight = max(expectations.len + 1, 2)
+    # Figure out how much room we need to display our information
+    let labelWidth = mapIt(expectations, it.label.len).foldl(max(a, b)) + 10
+    let labelsPerLine = width div labelWidth
+    let dispHeight = max((expectations.len div labelsPerLine) + 1, 2)
     let logwin = newwin(height - dispHeight, width, 0, 0)
     let dispwin = newwin(dispHeight, width, height - dispHeight, 0)
     dispwin.wborder(' ', ' ', '_', ' ', '_', '_', ' ', ' ')
@@ -173,6 +186,7 @@ Expectations JSON definitions follow this format:
 
       if lineMsg.dataAvailable:
         let line = lineMsg.msg
+        if not outFile.isNil: outFile.writeLine(line)
         for expect in expectations:
           if not expect.found:
             if line.find(expect.pattern).isSome:
@@ -181,20 +195,27 @@ Expectations JSON definitions follow this format:
 
         if drawDisp or firstPass:
           dispwin.wmove(1, 0)
+          var labelsOnLine = 0
           for expect in expectations:
-            let text =
+            var text =
               if expect.found: " FOUND  "
               else: " MISSING "
+            text = align(expect.label & text, labelWidth)
 
             if expect.expected == expect.found:
               dispwin.wattron(COLOR_PAIR(1))
-              dispwin.wprintw(expect.label & text & "\n")
+              dispwin.wprintw(text)
               dispwin.wattroff(COLOR_PAIR(1))
 
             else:
               dispwin.wattron(COLOR_PAIR(2))
-              dispwin.wprintw(expect.label & text & "\n")
+              dispwin.wprintw(text)
               dispwin.wattroff(COLOR_PAIR(2))
+
+            if labelsOnLine == labelsPerLine - 1:
+              labelsOnLine = 0
+              dispwin.wprintw("\n")
+            else: labelsOnLine += 1
 
           dispwin.wrefresh()
           firstPass = false
@@ -234,6 +255,11 @@ Expectations JSON definitions follow this format:
     exitErr getCurrentExceptionMsg()
 
   finally:
-    if not cmdProc.isNil and cmdProc.running(): cmdProc.kill()
+    if not cmdProc.isNil:
+      if running(cmdProc): kill(cmdProc)
+    else:
+      if not inStream.isNil: close(inStream)
+    if not outFile.isNil: close(outFile)
+
     close(msgChannel)
     endwin()
